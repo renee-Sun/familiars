@@ -1,0 +1,4 @@
+# pnpm 11/12：依赖的 build 脚本默认 deny，需在 allowBuilds 里显式声明。
+# esbuild 是 tsx 的依赖，其 postinstall 只是良性的二进制校验，放行。
+allowBuilds:
+  esbuild: true
