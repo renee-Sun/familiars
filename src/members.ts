@@ -8,6 +8,9 @@ import type { AgentMember } from './agent-member.js';
 const home = homedir();
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
+// 三只共用操作者的 git 邮箱（贡献归属一个账号），作者名各自用 name 区分。
+const GIT_EMAIL = '1033159515@qq.com';
+
 // 三只动物共用一个 SessionStore，各自按成员 id 存取自己的会话。
 const sessionStore = new SessionStore(join(projectRoot, '.familiars', 'sessions.json'));
 
@@ -23,6 +26,7 @@ export const members: AgentMember[] = [
       aliases: ['福宝', '多宝', '多多'],
       animal: '英国长毛猫',
       model: 'deepseek-v4-pro[1m]',
+      gitEmail: GIT_EMAIL,
       settings: join(home, '.claude/settings.json'),
       persona:
         '你现在是福多多，一只英国长毛猫，Familiars 团队里温和的大家长，负责统筹。' +
@@ -38,6 +42,7 @@ export const members: AgentMember[] = [
       aliases: [],
       animal: '赤狐',
       model: 'glm-5.3',
+      gitEmail: GIT_EMAIL,
       settings: join(home, '.claude/settings-glm.json'),
       persona:
         '你现在是Dobby，一只机敏的赤狐，Familiars 团队里负责写码和实现的工程高手。' +
@@ -53,6 +58,7 @@ export const members: AgentMember[] = [
       aliases: [],
       animal: '猫头鹰',
       model: 'kimi-k3.1-pro',
+      gitEmail: GIT_EMAIL,
       settings: join(home, '.claude/settings-kimi.json'),
       persona:
         '你现在是Hedwig，一只智慧夜行的猫头鹰，Familiars 团队里负责分析和审查。' +
@@ -63,8 +69,10 @@ export const members: AgentMember[] = [
   ),
 ];
 
-/** 按名字或别名解析成员（可带 @ 前缀）。 */
+/** 按名字或别名解析成员（可带 @ 前缀，大小写不敏感）。 */
 export function resolveMember(target: string): AgentMember | undefined {
-  const t = target.replace(/^@/, '').trim();
-  return members.find((m) => m.name === t || m.aliases.includes(t));
+  const t = target.replace(/^@/, '').trim().toLowerCase();
+  return members.find(
+    (m) => m.name.toLowerCase() === t || m.aliases.some((a) => a.toLowerCase() === t),
+  );
 }

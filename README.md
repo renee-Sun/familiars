@@ -22,6 +22,7 @@ corepack pnpm serve                     # 启动 Web 前端 → http://localhost
 
 corepack pnpm start                     # CLI：列出成员
 corepack pnpm start @福多多 你的问题      # CLI 单聊（可写）
+corepack pnpm start @福多多 @Dobby 你的问题  # CLI 同时 @ 多只（可写）
 corepack pnpm start @all 你的问题        # CLI 广播（只读）
 corepack pnpm start --reset @福多多      # 清空记忆
 
@@ -49,7 +50,7 @@ corepack pnpm test                      # 单元测试
 - **M0 单 agent 流式闭环** ✅：`spawn claude -p` → 解析 stream-json → 流式输出。
 - **M1 适配器抽象 + 三成员 + 人设** ✅：`AgentMember` 接口；`--append-system-prompt` 注入动物身份。
 - **M2 会话持久化** ✅：从 init 事件抓 session_id，`--resume` 自动续接，`--reset` 清空。
-- **M3 群聊语义** ✅：`@all` 广播（并发 fan-out）+ 权限档位（广播 `plan` 只读、@单个 `acceptEdits` 可写）。
+- **M3 群聊语义** ✅：`@all` 广播（并发 fan-out）+ 多人 `@`（`@Dobby @Hedwig` 并发定向）+ 权限档位（广播 `plan` 只读、@一人或多人 `acceptEdits` 可写）。
 - **M4 测试 + 打磨** ✅：抽纯函数、10 个单测、总超时保护、文档。
 - **M5 Web 前端** ✅：Node 原生 http + NDJSON 流式 + 单页 HTML，零依赖、不引框架。
 
@@ -65,7 +66,7 @@ corepack pnpm test                      # 单元测试
 2. **复用现有 settings 隔离 provider**：每厂商一份 settings，`claude -p --settings <file>` 直接复用，天然"一进程一后端"。
 3. **流式解析**：stream-json 每行一个 JSON 事件，异步逐行读取，边生成边输出。
 4. **会话持久化**：从 init 事件抓 session_id，跨轮 `--resume`，成员"有记忆"。
-5. **权限档位**：广播用 `plan`（只读）、@单个用 `acceptEdits`（可写），复用 agent CLI 现成的权限模型。
+5. **权限档位**：广播用 `plan`（只读）、@一人或多人用 `acceptEdits`（可写），复用 agent CLI 现成的权限模型。
 6. **零依赖 Web 层**：原生 http + 单页 HTML，不引框架。
 
 ## 踩过的坑

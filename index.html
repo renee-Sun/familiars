@@ -36,7 +36,7 @@
 </header>
 <main id="log"></main>
 <footer>
-  <input id="input" placeholder="输入问题；@名字 单独问，不 @ 则三个一起答">
+  <input id="input" placeholder="输入问题；@名字 单独问，@多只 同时问，不 @ 则福多多答">
   <button id="send">发送</button>
 </footer>
 <script>
@@ -61,14 +61,44 @@
     }
   }
 
-  // 解析消息里的 @ 提及，返回被 @ 的成员（按名字/别名匹配）。
+  // 解析消息里的 @ 提及，返回被 @ 的成员（按名字/别名匹配，大小写不敏感）。
   function parseMentions(prompt) {
+    const lower = prompt.toLowerCase();
     const out = [];
     for (const m of state.members) {
       const names = [m.name, ...m.aliases];
-      if (names.some((n) => prompt.includes('@' + n))) out.push(m);
+      if (names.some((n) => lower.includes('@' + n.toLowerCase()))) out.push(m);
     }
     return out;
+  }
+
+  // 转义正则特殊字符，让名字能安全拼进 RegExp。
+  function escapeRegExp(s) {
+    return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  }
+
+  // 把 @名字 / @别名 / @all 从正文里剥掉——@ 是路由语法，不该出现在 agent 收到的消息里。
+  // 长名字优先替换，避免别名是名字前缀时截断。
+  function stripMentions(prompt) {
+    const tokens = ['@all', '@全体'];
+    for (const m of state.members) tokens.push(m.name, ...m.aliases);
+    tokens.sort((a, b) => b.length - a.length);
+    let out = prompt;
+    for (const t of tokens) {
+      const pat = t.startsWith('@') ? t : '@' + t; // 广播 token 自带 @，成员名补上
+      out = out.replace(new RegExp(escapeRegExp(pat), 'gi'), '');
+    }
+    return out.split(/\s+/).filter(Boolean).join(' ');
+  }
+
+  // 是否显式广播（@all / @全体）。
+  function isBroadcast(prompt) {
+    return /@(all|全体)/i.test(prompt);
+  }
+
+  // 没 @ 任何人时的默认应答成员：福多多。
+  function defaultMember() {
+    return state.members.find((m) => m.name === '福多多') ?? state.members[0];
   }
 
   function scrollBottom() { log.scrollTop = log.scrollHeight; }
@@ -110,16 +140,35 @@
   }
 
   async function send() {
-    const prompt = input.value.trim();
-    if (!prompt) return;
+    const raw = input.value.trim();
+    if (!raw) return;
     input.value = '';
 
-    const mentioned = parseMentions(prompt);
-    const targets = mentioned.length > 0 ? mentioned : state.members;
-    const broadcast = mentioned.length === 0;
-    const targetLabel = broadcast ? '@all' : mentioned.map((m) => '@' + m.name).join(' ');
+    const mentioned = parseMentions(raw);
+    const broadcast = isBroadcast(raw);
+    let targets;
+    if (broadcast) {
+      targets = state.members;
+    } else if (mentioned.length > 0) {
+      targets = mentioned;
+    } else {
+      const def = defaultMember();
+      targets = def ? [def] : [];
+    }
+    const targetLabel = broadcast ? '@all' : targets.map((m) => '@' + m.name).join(' ');
 
-    addUser(prompt, targetLabel);
+    addUser(raw, targetLabel);
+
+    // 发给 agent 的正文剥掉 @ 路由 token（含 @all）；@ 只是路由语法，不是内容。
+    const prompt = stripMentions(raw);
+    if (!prompt) {
+      const d = document.createElement('div');
+      d.className = 'msg agent';
+      d.textContent = '⚠️ 只有 @ 没有内容，请带上要说的话';
+      log.appendChild(d);
+      scrollBottom();
+      return;
+    }
 
     const bubbles = {};
     for (const m of targets) bubbles[m.id] = addAgentBubble(m);
@@ -127,7 +176,8 @@
     const res = await fetch('/chat', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ members: targets.map((m) => m.id), prompt }),
+      // 广播发 members: []，让服务端走「ids 空 = 广播」的 plan 只读档
+      body: JSON.stringify({ members: broadcast ? [] : targets.map((m) => m.id), prompt, display: raw }),
     });
 
     const reader = res.body.getReader();

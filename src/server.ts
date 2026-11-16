@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { members } from './members.js';
 import type { AgentMember, PermissionMode } from './agent-member.js';
 import { HistoryStore } from './history-store.js';
+import { buildSharedContext } from './shared-context.js';
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.PORT ?? 3210);
@@ -28,11 +29,13 @@ async function streamMember(
   prompt: string,
   permissionMode: PermissionMode,
   res: ServerResponse,
+  sharedContext = '',
 ): Promise<void> {
+  const fullPrompt = sharedContext ? `${sharedContext}\n\n【现在】用户说：${prompt}` : prompt;
   writeEvent(res, { member: member.id, name: member.name, animal: member.animal, start: true });
   let text = '';
   try {
-    for await (const chunk of member.send(prompt, { permissionMode })) {
+    for await (const chunk of member.send(fullPrompt, { permissionMode })) {
       text += chunk;
       writeEvent(res, { member: member.id, name: member.name, text: chunk });
     }
@@ -53,9 +56,15 @@ async function streamMember(
 
 /**
  * 按成员 id 路由：ids 非空 = 定向（可写 acceptEdits）；ids 空 = 广播（只读 plan）。
- * 前端负责解析消息里的 @，把被 @ 的成员 id 传过来。
+ * 前端负责解析消息里的 @：members = 被 @ 的成员 id，prompt = 剥掉 @ token 的正文，
+ * display = 用户原文（含 @），用于聊天历史回放。
  */
-async function handleChat(ids: string[], prompt: string, res: ServerResponse): Promise<void> {
+async function handleChat(
+  ids: string[],
+  prompt: string,
+  display: string,
+  res: ServerResponse,
+): Promise<void> {
   const directed = ids.length > 0;
   const targets = directed
     ? ids.map((id) => members.find((m) => m.id === id)).filter((m): m is AgentMember => m !== undefined)
@@ -69,8 +78,11 @@ async function handleChat(ids: string[], prompt: string, res: ServerResponse): P
   const permissionMode: PermissionMode = directed ? 'acceptEdits' : 'plan';
   const label = directed ? targets.map((m) => '@' + m.name).join(' ') : '@all';
 
-  history.append({ role: 'user', target: label, text: prompt });
-  await Promise.all(targets.map((m) => streamMember(m, prompt, permissionMode, res)));
+  // 组装共享上下文：当前这条消息之前的历史，让被 @ 的成员了解"大家刚才聊了什么"。
+  const sharedContext = buildSharedContext(history.getAll());
+
+  history.append({ role: 'user', target: label, text: display });
+  await Promise.all(targets.map((m) => streamMember(m, prompt, permissionMode, res, sharedContext)));
 }
 
 const server = createServer((req, res) => {
@@ -112,9 +124,9 @@ const server = createServer((req, res) => {
       body += chunk;
     });
     req.on('end', () => {
-      let parsed: { members?: string[]; prompt?: string };
+      let parsed: { members?: string[]; prompt?: string; display?: string };
       try {
-        parsed = JSON.parse(body) as { members?: string[]; prompt?: string };
+        parsed = JSON.parse(body) as { members?: string[]; prompt?: string; display?: string };
       } catch {
         res.writeHead(400, { 'content-type': 'application/json' });
         res.end(JSON.stringify({ error: 'bad json' }));
@@ -129,7 +141,12 @@ const server = createServer((req, res) => {
         'content-type': 'application/x-ndjson; charset=utf-8',
         'cache-control': 'no-cache',
       });
-      handleChat(Array.isArray(parsed.members) ? parsed.members : [], parsed.prompt, res)
+      handleChat(
+        Array.isArray(parsed.members) ? parsed.members : [],
+        parsed.prompt,
+        parsed.display ?? parsed.prompt,
+        res,
+      )
         .then(() => res.end())
         .catch((err) => {
           writeEvent(res, { error: err instanceof Error ? err.message : String(err) });

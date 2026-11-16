@@ -1,7 +1,6 @@
-import { members, resolveMember } from './members.js';
-import type { AgentMember } from './agent-member.js';
-
-const BROADCAST_TARGETS = new Set(['@all', '@全体', 'all']);
+import { members } from './members.js';
+import type { AgentMember, PermissionMode } from './agent-member.js';
+import { parseCliArgs } from './cli-parse.js';
 
 function printHelp(): void {
   console.log('Familiars — 一个多 agent 协作平台\n');
@@ -12,18 +11,23 @@ function printHelp(): void {
     console.log(`  @${m.name}  ${m.animal} · ${m.model}${aliasText}`);
   }
   console.log('\n用法：');
-  console.log('  pnpm start @福多多 你的问题         # 单聊（可写）');
-  console.log('  pnpm start Dobby 你的问题           # 不带 @ 也行');
-  console.log('  pnpm start @all 你的问题            # 广播给三只（只读）');
-  console.log('  pnpm start --reset @福多多          # 清空福多多的会话记忆');
+  console.log('  pnpm start @福多多 你的问题           # 单聊（可写）');
+  console.log('  pnpm start @福多多 @Dobby 你的问题    # 同时 @ 多只（可写）');
+  console.log('  pnpm start Dobby 你的问题             # 不带 @ 也行');
+  console.log('  pnpm start @all 你的问题              # 广播给三只（只读）');
+  console.log('  pnpm start --reset @福多多            # 清空福多多的会话记忆');
 }
 
-/** 广播：同一问题并发发给所有成员，各答各的（只读，plan）。 */
-async function broadcast(prompt: string): Promise<void> {
+/** 并发把同一问题发给多个成员，各答各的，按成员分组输出。 */
+async function fanOut(
+  targets: AgentMember[],
+  prompt: string,
+  permissionMode: PermissionMode,
+): Promise<void> {
   const results = await Promise.all(
-    members.map(async (m) => {
+    targets.map(async (m) => {
       let text = '';
-      for await (const chunk of m.send(prompt, { permissionMode: 'plan' })) {
+      for await (const chunk of m.send(prompt, { permissionMode })) {
         text += chunk;
       }
       return { member: m, text };
@@ -36,7 +40,7 @@ async function broadcast(prompt: string): Promise<void> {
   }
 }
 
-/** 单聊：与某个成员对话（可写，acceptEdits）。 */
+/** 单聊：与某个成员对话（可写，acceptEdits），实时流式输出。 */
 async function chat(member: AgentMember, prompt: string): Promise<void> {
   console.log(`[${member.name} · ${member.animal}]`);
   for await (const chunk of member.send(prompt, { permissionMode: 'acceptEdits' })) {
@@ -46,59 +50,31 @@ async function chat(member: AgentMember, prompt: string): Promise<void> {
 }
 
 async function main(): Promise<void> {
-  const args = process.argv.slice(2);
+  const action = parseCliArgs(process.argv.slice(2));
 
-  if (args.length === 0) {
-    printHelp();
-    return;
-  }
-
-  if (args[0] === '--reset') {
-    const target = args[1];
-    if (!target) {
-      console.error('用法：pnpm start --reset @福多多');
+  switch (action.kind) {
+    case 'help':
+      printHelp();
+      return;
+    case 'error':
+      console.error(action.message);
       process.exitCode = 1;
       return;
-    }
-    const member = resolveMember(target);
-    if (!member) {
-      console.error(`不认识「${target}」。`);
-      process.exitCode = 1;
+    case 'reset':
+      action.target.reset();
+      console.log(`已清空 ${action.target.name} 的会话记忆。`);
       return;
-    }
-    member.reset();
-    console.log(`已清空 ${member.name} 的会话记忆。`);
-    return;
-  }
-
-  const target = args[0]!;
-  const prompt = args.slice(1).join(' ');
-
-  if (BROADCAST_TARGETS.has(target)) {
-    if (!prompt) {
-      console.error('广播请带上问题，例如：pnpm start @all 聊聊这个方案');
-      process.exitCode = 1;
+    case 'broadcast':
+      await fanOut(members, action.prompt, 'plan');
       return;
-    }
-    await broadcast(prompt);
-    return;
+    case 'directed':
+      if (action.targets.length === 1) {
+        await chat(action.targets[0]!, action.prompt);
+      } else {
+        await fanOut(action.targets, action.prompt, 'acceptEdits');
+      }
+      return;
   }
-
-  const member = resolveMember(target);
-  if (!member) {
-    console.error(`不认识「${target}」。可用成员：`);
-    printHelp();
-    process.exitCode = 1;
-    return;
-  }
-
-  if (!prompt) {
-    console.error('请带上问题，例如：pnpm start @福多多 用一句话介绍你自己');
-    process.exitCode = 1;
-    return;
-  }
-
-  await chat(member, prompt);
 }
 
 main().catch((err) => {
