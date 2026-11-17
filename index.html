@@ -36,7 +36,7 @@
 </header>
 <main id="log"></main>
 <footer>
-  <input id="input" placeholder="输入问题；@名字 单独问，@多只 同时问，不 @ 则福多多答">
+  <input id="input" placeholder="输入问题；#workflow 串行接力，@名字 单独问，@多只 同时问，不 @ 则福多多答">
   <button id="send">发送</button>
 </footer>
 <script>
@@ -96,6 +96,33 @@
     return /@(all|全体)/i.test(prompt);
   }
 
+  // 是否串行接力（#workflow）。
+  function isWorkflow(prompt) {
+    return /#workflow/i.test(prompt);
+  }
+
+  // 剥掉 #workflow 标签。
+  function stripWorkflow(prompt) {
+    return prompt.replace(/#workflow/gi, '').replace(/\s+/g, ' ').trim();
+  }
+
+  // 按输入顺序解析 @ 提及（串行时用于确定接力顺序），精确匹配名字/别名。
+  function parseMentionsInOrder(prompt) {
+    const out = [];
+    const seen = new Set();
+    for (const token of prompt.match(/@[\p{L}\p{N}_.-]+/gu) ?? []) {
+      const handle = token.slice(1).toLowerCase();
+      const member = state.members.find(
+        (m) => m.name.toLowerCase() === handle || m.aliases.some((a) => a.toLowerCase() === handle),
+      );
+      if (member && !seen.has(member.id)) {
+        seen.add(member.id);
+        out.push(member);
+      }
+    }
+    return out;
+  }
+
   // 没 @ 任何人时的默认应答成员：福多多。
   function defaultMember() {
     return state.members.find((m) => m.name === '福多多') ?? state.members[0];
@@ -146,8 +173,13 @@
 
     const mentioned = parseMentions(raw);
     const broadcast = isBroadcast(raw);
+    const workflow = isWorkflow(raw);
     let targets;
-    if (broadcast) {
+    if (workflow) {
+      // 串行：@ 了谁就按输入顺序接力；没 @ 就全员默认顺序
+      const inOrder = parseMentionsInOrder(raw);
+      targets = inOrder.length > 0 ? inOrder : state.members;
+    } else if (broadcast) {
       targets = state.members;
     } else if (mentioned.length > 0) {
       targets = mentioned;
@@ -159,8 +191,8 @@
 
     addUser(raw, targetLabel);
 
-    // 发给 agent 的正文剥掉 @ 路由 token（含 @all）；@ 只是路由语法，不是内容。
-    const prompt = stripMentions(raw);
+    // 发给 agent 的正文剥掉 @ 路由 token（含 @all）和 #workflow 标签；它们都是路由语法，不是内容。
+    const prompt = workflow ? stripWorkflow(stripMentions(raw)) : stripMentions(raw);
     if (!prompt) {
       const d = document.createElement('div');
       d.className = 'msg agent';
@@ -176,8 +208,13 @@
     const res = await fetch('/chat', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      // 广播发 members: []，让服务端走「ids 空 = 广播」的 plan 只读档
-      body: JSON.stringify({ members: broadcast ? [] : targets.map((m) => m.id), prompt, display: raw }),
+      // 广播（非 workflow）发 members: []，让服务端走 plan 只读档；串行/定向发显式 id 列表
+      body: JSON.stringify({
+        members: broadcast && !workflow ? [] : targets.map((m) => m.id),
+        prompt,
+        display: raw,
+        mode: workflow ? 'workflow' : undefined,
+      }),
     });
 
     const reader = res.body.getReader();

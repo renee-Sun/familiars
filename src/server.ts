@@ -6,11 +6,15 @@ import { members } from './members.js';
 import type { AgentMember, PermissionMode } from './agent-member.js';
 import { HistoryStore } from './history-store.js';
 import { buildSharedContext } from './shared-context.js';
+import { parseA2AMentions } from './a2a-mentions.js';
+import { predictStreak, type StreakEntry } from './ping-pong.js';
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.PORT ?? 3210);
 
-const history = new HistoryStore(join(projectRoot, '.familiars', 'history.json'));
+// 数据目录可用环境变量覆盖（测试时指向独立临时目录，不碰真实数据）。
+const dataDir = process.env.FAMILIARS_DATA_DIR ?? join(projectRoot, '.familiars');
+const history = new HistoryStore(join(dataDir, 'history.json'));
 
 type ChatEvent = Record<string, unknown>;
 
@@ -26,12 +30,10 @@ function writeEvent(res: ServerResponse, evt: ChatEvent): void {
  */
 async function streamMember(
   member: AgentMember,
-  prompt: string,
+  fullPrompt: string,
   permissionMode: PermissionMode,
   res: ServerResponse,
-  sharedContext = '',
-): Promise<void> {
-  const fullPrompt = sharedContext ? `${sharedContext}\n\n【现在】用户说：${prompt}` : prompt;
+): Promise<string> {
   writeEvent(res, { member: member.id, name: member.name, animal: member.animal, start: true });
   let text = '';
   try {
@@ -41,6 +43,7 @@ async function streamMember(
     }
     writeEvent(res, { member: member.id, name: member.name, done: true });
     history.append({ role: 'agent', member: member.id, name: member.name, animal: member.animal, text });
+    return text;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     writeEvent(res, { member: member.id, name: member.name, error: msg });
@@ -51,6 +54,88 @@ async function streamMember(
       animal: member.animal,
       text: text ? `${text}\n[error] ${msg}` : `[error] ${msg}`,
     });
+    return text;
+  }
+}
+
+/** 组装"基础 prompt"：共享上下文 + 用户原始问题。 */
+function buildBasePrompt(sharedContext: string, prompt: string): string {
+  return sharedContext ? `${sharedContext}\n\n【现在】用户说：${prompt}` : prompt;
+}
+
+const MAX_A2A_DEPTH = 7;
+
+/** A2A 链的共享状态（总回答数 + 连击）。 */
+interface ChainState {
+  depth: number;
+  streak: StreakEntry | undefined;
+}
+
+/** 组装"交接 prompt"：告诉被拉起的成员"谁在叫你、TA 说了什么"。 */
+function buildHandoffPrompt(callerName: string, callerResponse: string, warnPingPong: boolean): string {
+  let p = `${callerName} 在回复里 @ 了你，请你接着处理。\n\n【${callerName} 说】\n${callerResponse}`;
+  if (warnPingPong) {
+    p += '\n\n【提醒】你们已经在来回传递了，如果没有新的实质进展，请直接给出结论或收尾，不要继续踢皮球。';
+  }
+  return p;
+}
+
+/**
+ * A2A：解析一只成员回复里的"行首 @"，自动拉起被 @ 的成员（递归）。
+ * 护栏：深度上限（MAX_A2A_DEPTH）+ ping-pong 连击（警告/拦截/实质重置）。
+ */
+async function runA2A(
+  caller: AgentMember,
+  callerResponse: string,
+  permissionMode: PermissionMode,
+  res: ServerResponse,
+  state: ChainState,
+): Promise<void> {
+  const mentionedIds = parseA2AMentions(callerResponse, caller.id, members);
+  for (const id of mentionedIds) {
+    if (state.depth >= MAX_A2A_DEPTH) break;
+    const target = members.find((m) => m.id === id);
+    if (!target) continue;
+
+    const verdict = predictStreak(state.streak, caller.id, target.id, callerResponse.length);
+    if (verdict.block) continue;
+
+    const handoffPrompt = buildHandoffPrompt(caller.name, callerResponse, verdict.warn);
+    state.depth += 1;
+    state.streak = { from: caller.id, to: target.id, count: verdict.count };
+
+    const targetResponse = await streamMember(target, handoffPrompt, permissionMode, res);
+    await runA2A(target, targetResponse, permissionMode, res, state);
+  }
+}
+
+/**
+ * 串行接力（#workflow）：成员按顺序依次回答，每只都能看到前面几只的完整答案；
+ * 每只答完后，若回复里"行首 @" 了别人，会自动拉起（A2A，见 runA2A）。
+ */
+async function runSerial(
+  targets: AgentMember[],
+  prompt: string,
+  permissionMode: PermissionMode,
+  res: ServerResponse,
+  sharedContext: string,
+): Promise<void> {
+  const basePrompt = buildBasePrompt(sharedContext, prompt);
+  const previous: { name: string; content: string }[] = [];
+  const state: ChainState = { depth: 0, streak: undefined };
+
+  for (const m of targets) {
+    let fullPrompt = basePrompt;
+    if (previous.length > 0) {
+      const prevText = previous.map((p) => `[${p.name} answered: ${p.content}]`).join('\n');
+      fullPrompt = `${basePrompt}\n\n【前面成员的回答】\n${prevText}\n\n【现在轮到你了】请基于以上回答，给出你的看法或补充。`;
+    }
+    const text = await streamMember(m, fullPrompt, permissionMode, res);
+    previous.push({ name: m.name, content: text });
+    state.depth += 1;
+
+    // A2A：这只答完，若回复里 @ 了别人，自动拉起
+    await runA2A(m, text, permissionMode, res, state);
   }
 }
 
@@ -63,6 +148,7 @@ async function handleChat(
   ids: string[],
   prompt: string,
   display: string,
+  mode: string | undefined,
   res: ServerResponse,
 ): Promise<void> {
   const directed = ids.length > 0;
@@ -82,7 +168,13 @@ async function handleChat(
   const sharedContext = buildSharedContext(history.getAll());
 
   history.append({ role: 'user', target: label, text: display });
-  await Promise.all(targets.map((m) => streamMember(m, prompt, permissionMode, res, sharedContext)));
+
+  if (mode === 'workflow') {
+    await runSerial(targets, prompt, permissionMode, res, sharedContext);
+  } else {
+    const basePrompt = buildBasePrompt(sharedContext, prompt);
+    await Promise.all(targets.map((m) => streamMember(m, basePrompt, permissionMode, res)));
+  }
 }
 
 const server = createServer((req, res) => {
@@ -124,9 +216,9 @@ const server = createServer((req, res) => {
       body += chunk;
     });
     req.on('end', () => {
-      let parsed: { members?: string[]; prompt?: string; display?: string };
+      let parsed: { members?: string[]; prompt?: string; display?: string; mode?: string };
       try {
-        parsed = JSON.parse(body) as { members?: string[]; prompt?: string; display?: string };
+        parsed = JSON.parse(body) as { members?: string[]; prompt?: string; display?: string; mode?: string };
       } catch {
         res.writeHead(400, { 'content-type': 'application/json' });
         res.end(JSON.stringify({ error: 'bad json' }));
@@ -145,6 +237,7 @@ const server = createServer((req, res) => {
         Array.isArray(parsed.members) ? parsed.members : [],
         parsed.prompt,
         parsed.display ?? parsed.prompt,
+        parsed.mode,
         res,
       )
         .then(() => res.end())

@@ -12,11 +12,13 @@ const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const GIT_EMAIL = '1033159515@qq.com';
 
 // 三只动物共用一个 SessionStore，各自按成员 id 存取自己的会话。
-const sessionStore = new SessionStore(join(projectRoot, '.familiars', 'sessions.json'));
+// 数据目录可用环境变量覆盖（测试时指向独立临时目录，不碰真实数据）。
+const dataDir = process.env.FAMILIARS_DATA_DIR ?? join(projectRoot, '.familiars');
+const sessionStore = new SessionStore(join(dataDir, 'sessions.json'));
 
 /**
  * 成员注册表 —— Familiars 的三只动物。
- * 每个成员各指一份 settings（隔离 provider），并带一个动物人设。
+ * 每个成员各指一份 settings（只存 provider 的 base_url + token），模型由 model 字段决定。
  */
 export const members: AgentMember[] = [
   new ClaudeCodeMember(
@@ -29,8 +31,10 @@ export const members: AgentMember[] = [
       gitEmail: GIT_EMAIL,
       settings: join(home, '.claude/settings.json'),
       persona:
-        '你现在是福多多，一只英国长毛猫，Familiars 团队里温和的大家长，负责统筹。' +
+        '你现在是福多多，一只英国长毛猫，Familiars 团队里温和的大家长，负责统筹和架构设计。' +
         '你以福多多身份说话，自称「本喵」，语气温和可靠，偶尔带点猫的慵懒。' +
+        '你的队友：Dobby（赤狐，GLM，擅长写码实现、终端、安全审计）；Hedwig（猫头鹰，DeepSeek Flash，擅长快速审查、快速测试）。' +
+        '你可以在一行开头写 @Dobby 或 @Hedwig 把工作交接过去：复杂架构/编码方案先 @Dobby 讨论，写完让 @Hedwig 审查和测试，最后你来收尾。' +
         '你的别名有福宝、多宝、多多。不要自称 Claude Code，也不要自称 AI 助手。',
     },
     sessionStore,
@@ -41,12 +45,14 @@ export const members: AgentMember[] = [
       name: 'Dobby',
       aliases: [],
       animal: '赤狐',
-      model: 'glm-5.3',
+      model: 'glm-5.3[1m]',
       gitEmail: GIT_EMAIL,
       settings: join(home, '.claude/settings-glm.json'),
       persona:
         '你现在是Dobby，一只机敏的赤狐，Familiars 团队里负责写码和实现的工程高手。' +
         '你以Dobby身份说话，语气利落、technical，喜欢给出干净可执行的方案。' +
+        '你的队友：福多多（英国长毛猫，DeepSeek Pro，擅长架构统筹、全代码库分析）；Hedwig（猫头鹰，DeepSeek Flash，擅长快速审查、快速测试）。' +
+        '你可以在一行开头写 @福多多 或 @Hedwig 把工作交接过去：复杂架构/编码方案先 @福多多 讨论，写完让 @Hedwig 审查和测试，需求有歧义 @福多多 拍板。' +
         '不要自称 Claude Code，也不要自称 AI 助手。',
     },
     sessionStore,
@@ -57,12 +63,14 @@ export const members: AgentMember[] = [
       name: 'Hedwig',
       aliases: [],
       animal: '猫头鹰',
-      model: 'kimi-k3.1-pro',
+      model: 'deepseek-v4-flash',
       gitEmail: GIT_EMAIL,
-      settings: join(home, '.claude/settings-kimi.json'),
+      settings: join(home, '.claude/settings.json'),
       persona:
-        '你现在是Hedwig，一只智慧夜行的猫头鹰，Familiars 团队里负责分析和审查。' +
+        '你现在是Hedwig，一只智慧夜行的猫头鹰，Familiars 团队里负责审查和快速测试。' +
         '你以Hedwig身份说话，语气沉静、洞察，擅长拆解问题、指出风险。' +
+        '你的队友：福多多（英国长毛猫，DeepSeek Pro，擅长架构统筹）；Dobby（赤狐，GLM，擅长写码实现、安全审计）。' +
+        '你可以在一行开头写 @福多多 或 @Dobby 把工作交接过去：审查发现问题 @Dobby 修复，需求有歧义 @福多多 拍板，你也可以快速写测试用例、跑测试验证。' +
         '不要自称 Claude Code，也不要自称 AI 助手。',
     },
     sessionStore,

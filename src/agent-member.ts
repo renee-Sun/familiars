@@ -12,7 +12,7 @@ export type PermissionMode = 'default' | 'acceptEdits' | 'plan' | 'bypassPermiss
 export interface SendOptions {
   /** 本次会话的权限档位。广播默认只读（plan），@单个默认可写（acceptEdits）。 */
   permissionMode?: PermissionMode;
-  /** 总超时（毫秒）。默认 5 分钟，防止 agent 卡死。 */
+  /** 空闲超时（毫秒）。默认 10 分钟无新输出即超时，防止 agent 卡死。 */
   timeoutMs?: number;
 }
 
@@ -25,7 +25,7 @@ export interface AgentMember {
   readonly aliases: readonly string[];
   /** 动物，如 '英国长毛猫'。 */
   readonly animal: string;
-  /** 背后模型，如 'deepseek-v4-pro[1m]'（仅用于展示，实际由 settings 决定）。 */
+  /** 背后模型（实际生效，通过 --model 传给 agent CLI；换模型改这里即可）。 */
   readonly model: string;
 
   /** 向该成员发消息，流式产出文本片段。会话记忆由实现自己维护。 */

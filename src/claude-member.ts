@@ -17,7 +17,7 @@ export interface ClaudeCodeMemberConfig {
   aliases: readonly string[];
   animal: string;
   model: string;
-  /** settings 文件路径（隔离 provider 的 base_url + token + model）。 */
+  /** settings 文件路径（只存 provider 的 base_url + token；模型由上面的 model 字段决定）。 */
   settings: string;
   /** 追加到 system prompt 的人设。 */
   persona: string;
@@ -33,7 +33,8 @@ export interface ClaudeCodeMemberConfig {
  * 2. stdin 置 ignore，避免 claude 干等 3 秒；
  * 3. assistant 事件同一 message 会先发 thinking 块再发 text 块，只取 text（见 stream-events.ts）；
  * 4. 会话记忆：从 init 事件抓 session_id 存进 SessionStore，下次 --resume 续接；
- * 5. 空闲超时：默认 10 分钟无新输出即 SIGTERM 杀进程（在干活就不误杀）。
+ * 5. 空闲超时：默认 10 分钟无新输出即 SIGTERM 杀进程（在干活就不误杀）；
+ * 6. 模型由成员配置的 model 字段决定（--model 显式传），settings 只存 base_url + token。
  */
 export class ClaudeCodeMember implements AgentMember {
   readonly id: string;
@@ -127,6 +128,8 @@ export class ClaudeCodeMember implements AgentMember {
       prompt,
       '--settings',
       this.settings,
+      '--model',
+      this.model, // 模型由成员配置决定（单一真相来源），settings 只存 base_url + token
       '--output-format',
       'stream-json',
       '--verbose', // stream-json 必需

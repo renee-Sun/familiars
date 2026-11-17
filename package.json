@@ -8,7 +8,7 @@
     "start": "tsx src/index.ts",
     "serve": "tsx src/server.ts",
     "check": "tsc --noEmit",
-    "test": "node --import tsx --test src/stream-events.test.ts src/session-store.test.ts src/history-store.test.ts src/shared-context.test.ts src/members.test.ts src/cli-parse.test.ts"
+    "test": "node --import tsx --test src/stream-events.test.ts src/session-store.test.ts src/history-store.test.ts src/shared-context.test.ts src/a2a-mentions.test.ts src/ping-pong.test.ts src/members.test.ts src/cli-parse.test.ts"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
