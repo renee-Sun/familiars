@@ -52,6 +52,81 @@ export function recall(query: string, memories: readonly Memory[], limit = 3): M
     .map((x) => x.memory);
 }
 
+/** 余弦相似度（两向量同维才可比；空向量或维度不一致返回 0）。 */
+export function cosineSimilarity(a: readonly number[], b: readonly number[]): number {
+  if (a.length === 0 || a.length !== b.length) return 0;
+  let dot = 0;
+  let normA = 0;
+  let normB = 0;
+  for (let i = 0; i < a.length; i++) {
+    const x = a[i] ?? 0;
+    const y = b[i] ?? 0;
+    dot += x * y;
+    normA += x * x;
+    normB += y * y;
+  }
+  if (normA === 0 || normB === 0) return 0;
+  return dot / (Math.sqrt(normA) * Math.sqrt(normB));
+}
+
+export interface RecallOptions {
+  limit?: number;
+  /** 语义召回的最低余弦相似度（低于此不返回）。默认 0.4，按 embedding-2 的分布标定：相关 ~0.42+，无关 ~0.35-。 */
+  semanticThreshold?: number;
+}
+
+/**
+ * 混合召回：关键词命中优先（精确、专有名词），语义相似（向量）兜底补语义相近的。
+ * queryVector 为空（embedding 不可用）时退化为纯关键词召回。
+ */
+export function hybridRecall(
+  query: string,
+  queryVector: readonly number[],
+  memories: readonly Memory[],
+  options: RecallOptions = {},
+): Memory[] {
+  const limit = options.limit ?? 3;
+  const threshold = options.semanticThreshold ?? 0.4;
+
+  // 关键词命中（id -> 命中数）
+  const keywordHits = new Map<string, number>();
+  const keywords = extractKeywords(query);
+  for (const memory of memories) {
+    if (keywords.length === 0) break;
+    const haystack = `${memory.type} ${memory.text}`.toLowerCase();
+    const score = keywords.reduce((acc, kw) => acc + (haystack.includes(kw) ? 1 : 0), 0);
+    if (score > 0) keywordHits.set(memory.id, score);
+  }
+
+  // 语义命中（按相似度降序，过滤低于阈值 / 无向量 / 维度不符的）
+  const semantic = memories
+    .filter((m) => m.vector && m.vector.length === queryVector.length)
+    .map((m) => ({ memory: m, score: cosineSimilarity(queryVector, m.vector as number[]) }))
+    .filter((x) => x.score >= threshold)
+    .sort((a, b) => b.score - a.score);
+
+  // 合并去重：关键词命中先排（按命中数），语义命中补空缺
+  const byId = new Map(memories.map((m) => [m.id, m]));
+  const out: Memory[] = [];
+  const seen = new Set<string>();
+
+  for (const [id] of [...keywordHits.entries()].sort((a, b) => b[1] - a[1])) {
+    const memory = byId.get(id);
+    if (memory && !seen.has(memory.id)) {
+      out.push(memory);
+      seen.add(memory.id);
+    }
+  }
+  for (const { memory } of semantic) {
+    if (!seen.has(memory.id)) {
+      out.push(memory);
+      seen.add(memory.id);
+    }
+  }
+
+  return out.slice(0, limit);
+}
+
 const TYPE_LABELS: Record<MemoryType, string> = {
   lesson: '教训',
   decision: '决策',

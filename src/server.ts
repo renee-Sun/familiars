@@ -9,7 +9,8 @@ import { buildSharedContext } from './shared-context.js';
 import { parseA2AMentions } from './a2a-mentions.js';
 import { predictStreak, type StreakEntry } from './ping-pong.js';
 import { MemoryStore, type Memory } from './memory-store.js';
-import { extractMemories, memoryTypeLabel, recall } from './memory.js';
+import { extractMemories, hybridRecall, memoryTypeLabel } from './memory.js';
+import { embedOne, embedTexts } from './embedding.js';
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.PORT ?? 3210);
@@ -46,9 +47,15 @@ async function streamMember(
     }
     writeEvent(res, { member: member.id, name: member.name, done: true });
     history.append({ role: 'agent', member: member.id, name: member.name, animal: member.animal, text });
-    // 结构化记忆：从回复里提取"记忆|类型|内容"标记，自动入库
+    // 结构化记忆：从回复里提取"记忆|类型|内容"标记，embedding 成向量后入库
     for (const mem of extractMemories(text)) {
-      memoryStore.append(mem.type, mem.text);
+      try {
+        const vector = await embedOne(mem.text);
+        memoryStore.append(mem.type, mem.text, vector);
+      } catch {
+        // embedding 失败也先把记忆存下来（关键词召回仍可用）
+        memoryStore.append(mem.type, mem.text);
+      }
     }
     return text;
   } catch (err) {
@@ -70,6 +77,34 @@ function buildMemoryContext(memories: Memory[]): string {
   if (memories.length === 0) return '';
   const lines = memories.map((m) => `- [${memoryTypeLabel(m.type)}] ${m.text}`);
   return `【相关记忆】\n${lines.join('\n')}`;
+}
+
+/** 召回相关记忆：先 embedding 查询向量，再混合召回；embedding 不可用时退回关键词。 */
+async function recallMemories(query: string): Promise<Memory[]> {
+  const memories = memoryStore.getAll();
+  let queryVector: number[] = [];
+  try {
+    queryVector = await embedOne(query);
+  } catch {
+    // embedding 不可用 → 空向量，hybridRecall 退化为纯关键词召回
+  }
+  return hybridRecall(query, queryVector, memories);
+}
+
+/** 启动时给没向量的旧记忆补齐 embedding（批量一次请求）。 */
+async function backfillMemoryVectors(): Promise<void> {
+  const pending = memoryStore.getUnvectorized();
+  if (pending.length === 0) return;
+  try {
+    const vectors = await embedTexts(pending.map((m) => m.text));
+    vectors.forEach((v, i) => {
+      const memory = pending[i];
+      if (memory) memoryStore.setVector(memory.id, v);
+    });
+    console.log(`已为 ${vectors.length} 条旧记忆补齐向量`);
+  } catch (err) {
+    console.warn(`记忆向量补齐失败（跳过）：${err instanceof Error ? err.message : String(err)}`);
+  }
 }
 
 /** 组装"基础 prompt"：相关记忆 + 共享上下文 + 用户原始问题。 */
@@ -185,8 +220,8 @@ async function handleChat(
 
   // 组装共享上下文：当前这条消息之前的历史，让被 @ 的成员了解"大家刚才聊了什么"。
   const sharedContext = buildSharedContext(history.getAll());
-  // 结构化记忆：按当前问题召回相关记忆，注入 prompt。
-  const memoryContext = buildMemoryContext(recall(prompt, memoryStore.getAll()));
+  // 结构化记忆：按当前问题召回相关记忆（向量 + 关键词混合），注入 prompt。
+  const memoryContext = buildMemoryContext(await recallMemories(prompt));
 
   history.append({ role: 'user', target: label, text: display });
 
@@ -276,4 +311,5 @@ const server = createServer((req, res) => {
 
 server.listen(PORT, '127.0.0.1', () => {
   console.log(`Familiars 前端已启动：http://localhost:${PORT}`);
+  void backfillMemoryVectors();
 });

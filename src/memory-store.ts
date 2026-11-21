@@ -8,6 +8,8 @@ export interface Memory {
   type: MemoryType;
   text: string;
   createdAt: number;
+  /** 文本的 embedding 向量（向量化检索用，旧记忆可能缺失）。 */
+  vector?: number[];
 }
 
 /**
@@ -22,13 +24,14 @@ export class MemoryStore {
     this.memories = existsSync(file) ? (JSON.parse(readFileSync(file, 'utf8')) as Memory[]) : [];
   }
 
-  append(type: MemoryType, text: string): Memory {
+  append(type: MemoryType, text: string, vector?: number[]): Memory {
     const memory: Memory = {
       id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       type,
       text,
       createdAt: Date.now(),
     };
+    if (vector) memory.vector = vector;
     this.memories.push(memory);
     this.persist();
     return memory;
@@ -36,6 +39,20 @@ export class MemoryStore {
 
   getAll(): Memory[] {
     return this.memories;
+  }
+
+  /** 给已入库的记忆补向量（旧记忆回填用）。 */
+  setVector(id: string, vector: number[]): void {
+    const memory = this.memories.find((m) => m.id === id);
+    if (memory) {
+      memory.vector = vector;
+      this.persist();
+    }
+  }
+
+  /** 还没 embedding 过的记忆（旧数据回填用）。 */
+  getUnvectorized(): Memory[] {
+    return this.memories.filter((m) => !m.vector);
   }
 
   clear(): void {
