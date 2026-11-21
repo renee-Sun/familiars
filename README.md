@@ -3,6 +3,8 @@
 一个多 agent 协作平台——把多个 AI agent 聚到同一个界面里，像一群动物一样协作。每个 agent 都是一个**真正的 agent CLI**（保留读代码、改文件、跑命令的能力），平台只做身份、路由、会话和记忆。
 
 > 灵感来自 Clowder AI；本项目是独立实现，从最简架构逐步搭建。
+>
+> 设计决策 / 踩坑记录 / 面试要点见 [DESIGN.md](DESIGN.md)。
 
 ## 成员（动物们）
 
@@ -14,7 +16,7 @@
 
 ## 当前状态
 
-**M8 完成 ✅** —— 向量化检索（智谱 embedding，关键词 + 语义混合召回）。
+**M9 完成 ✅** —— 记忆存储升级（JSON → SQLite + FTS5 全文索引 + BLOB 向量）。
 
 ```bash
 corepack pnpm install
@@ -46,8 +48,8 @@ Web 端额外支持 **`#workflow`**：
 | `src/session-store.ts` | `SessionStore`——「成员 id → 会话 id」磁盘持久化 |
 | `src/history-store.ts` | `HistoryStore`——聊天记录落盘（`GET /history` 读取、`DELETE` 清空） |
 | `src/shared-context.ts` | 把聊天历史压成摘要注入成员 prompt（共享时间线） |
-| `src/memory-store.ts` | `MemoryStore`——结构化记忆（教训/决策/事实 + embedding 向量）落盘 |
-| `src/memory.ts` | 记忆纯函数：`extractMemories`（提取）+ `recall`/`hybridRecall`（关键词 + 向量混合召回）+ `cosineSimilarity` |
+| `src/memory-store.ts` | `MemoryStore`——SQLite（`node:sqlite`，零依赖）+ FTS5 全文索引 + BLOB 向量；`keywordSearch`/`semanticSearch`/`hybridSearch` |
+| `src/memory.ts` | 记忆纯函数：`extractMemories`（提取）+ `extractKeywords`/`cosineSimilarity`/`mergeHybrid`（无副作用，可单测） |
 | `src/embedding.ts` | 智谱 embedding 客户端：`embedTexts`/`embedOne`（env 可覆盖，provider-agnostic） |
 | `src/a2a-mentions.ts` | 解析 agent 回复里的"行首 @"（A2A 路由手势） |
 | `src/ping-pong.ts` | ping-pong 连击护栏（纯函数，防"踢皮球"死循环） |
@@ -55,7 +57,7 @@ Web 端额外支持 **`#workflow`**：
 | `src/index.ts` | CLI 入口：@路由 / @all 广播 / --reset |
 | `src/server.ts` | Web 服务 + 串行接力 `runSerial` + A2A `runA2A` |
 | `index.html` | 前端单页：@提及路由 + `#workflow` + 消息气泡 + 流式渲染 |
-| `src/*.test.ts` | 单元测试（node:test，零额外依赖，62 个） |
+| `src/*.test.ts` | 单元测试（node:test，零额外依赖，60 个） |
 
 ## 里程碑
 
@@ -68,6 +70,7 @@ Web 端额外支持 **`#workflow`**：
 - **M6 串行接力 + A2A** ✅：`#workflow` 串行接力（每只见前面答案）+ agent 回复里"行首 @" 自动拉起（A2A）+ 四道护栏。
 - **M7 结构化记忆** ✅：agent 在回复里写「记忆|类型|内容」自动入库，调 agent 前按相关性召回注入（context 有限 vs memory 持久）。
 - **M8 向量化检索** ✅：智谱 embedding（默认 `embedding-2`）给记忆打向量，召回 = 关键词命中优先 + 余弦相似度语义兜底（混合召回），旧记忆启动时自动回填向量。
+- **M9 记忆存储升级** ✅：`memory.json` 整文件读写 → SQLite（`node:sqlite`，仍零依赖）；关键词走 FTS5 trigram 索引 + LIKE 兜底短中文词，向量存 BLOB 做余弦召回。
 
 ## M6 设计（面试可讲）
 
@@ -90,6 +93,7 @@ Web 端额外支持 **`#workflow`**：
 7. **零依赖 Web 层**：原生 http + 单页 HTML，不引框架。
 8. **结构化记忆**：教训/决策/事实有类型、持久、按相关性召回（区别于"最近聊天摘要"的临时性）。
 9. **向量化检索**：embedding 客户端 provider-agnostic（env 换厂商）；混合召回 = 关键词精确 + 向量语义，互相兜底。
+10. **SQLite 存储 + 零依赖**：用 Node 内置 `node:sqlite`（不引第三方原生依赖）；append 不再整文件重写，关键词走 FTS5 索引，规模上来也不怕。
 
 ## 踩过的坑
 
@@ -105,6 +109,7 @@ Web 端额外支持 **`#workflow`**：
 | 测试误删真实数据 | 数据目录用 `FAMILIARS_DATA_DIR` 隔离，测试指向临时目录 |
 | 智谱 embedding 报 429「余额不足」 | embedding 单独计费（`api/paas/v4`），和 GLM 聊天不共资源包，需单独充值 |
 | `embedding-3` 区分度反而不如 `embedding-2` | 中文短文本语义匹配上 embedding-2 相关/无关分得更开（0.42+ vs 0.35-），默认用 embedding-2，阈值标定 0.4 |
+| FTS5 对 2 字中文词查不到 | `unicode61` 把无空格中文整句当一个 token，`trigram` 能子串匹配但 <3 字的词无效——用 trigram 做主索引 + `LIKE` 兜底短中文词 |
 
 ## 路线图
 
@@ -117,6 +122,7 @@ Web 端额外支持 **`#workflow`**：
 - ✅ M6 串行接力 + A2A 协作
 - ✅ M7 结构化记忆
 - ✅ M8 向量化检索
+- ✅ M9 记忆存储升级（SQLite + FTS5）
 
 ## 已知限制 / 后续
 

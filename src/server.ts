@@ -9,7 +9,7 @@ import { buildSharedContext } from './shared-context.js';
 import { parseA2AMentions } from './a2a-mentions.js';
 import { predictStreak, type StreakEntry } from './ping-pong.js';
 import { MemoryStore, type Memory } from './memory-store.js';
-import { extractMemories, hybridRecall, memoryTypeLabel } from './memory.js';
+import { extractMemories, memoryTypeLabel } from './memory.js';
 import { embedOne, embedTexts } from './embedding.js';
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -18,7 +18,7 @@ const PORT = Number(process.env.PORT ?? 3210);
 // 数据目录可用环境变量覆盖（测试时指向独立临时目录，不碰真实数据）。
 const dataDir = process.env.FAMILIARS_DATA_DIR ?? join(projectRoot, '.familiars');
 const history = new HistoryStore(join(dataDir, 'history.json'));
-const memoryStore = new MemoryStore(join(dataDir, 'memory.json'));
+const memoryStore = new MemoryStore(join(dataDir, 'memory.db'));
 
 type ChatEvent = Record<string, unknown>;
 
@@ -81,14 +81,13 @@ function buildMemoryContext(memories: Memory[]): string {
 
 /** 召回相关记忆：先 embedding 查询向量，再混合召回；embedding 不可用时退回关键词。 */
 async function recallMemories(query: string): Promise<Memory[]> {
-  const memories = memoryStore.getAll();
   let queryVector: number[] = [];
   try {
     queryVector = await embedOne(query);
   } catch {
-    // embedding 不可用 → 空向量，hybridRecall 退化为纯关键词召回
+    // embedding 不可用 → 空向量，hybridSearch 退化为纯关键词召回
   }
-  return hybridRecall(query, queryVector, memories);
+  return memoryStore.hybridSearch(query, queryVector);
 }
 
 /** 启动时给没向量的旧记忆补齐 embedding（批量一次请求）。 */
