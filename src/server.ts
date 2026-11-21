@@ -8,6 +8,8 @@ import { HistoryStore } from './history-store.js';
 import { buildSharedContext } from './shared-context.js';
 import { parseA2AMentions } from './a2a-mentions.js';
 import { predictStreak, type StreakEntry } from './ping-pong.js';
+import { MemoryStore, type Memory } from './memory-store.js';
+import { extractMemories, memoryTypeLabel, recall } from './memory.js';
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.PORT ?? 3210);
@@ -15,6 +17,7 @@ const PORT = Number(process.env.PORT ?? 3210);
 // 数据目录可用环境变量覆盖（测试时指向独立临时目录，不碰真实数据）。
 const dataDir = process.env.FAMILIARS_DATA_DIR ?? join(projectRoot, '.familiars');
 const history = new HistoryStore(join(dataDir, 'history.json'));
+const memoryStore = new MemoryStore(join(dataDir, 'memory.json'));
 
 type ChatEvent = Record<string, unknown>;
 
@@ -43,6 +46,10 @@ async function streamMember(
     }
     writeEvent(res, { member: member.id, name: member.name, done: true });
     history.append({ role: 'agent', member: member.id, name: member.name, animal: member.animal, text });
+    // 结构化记忆：从回复里提取"记忆|类型|内容"标记，自动入库
+    for (const mem of extractMemories(text)) {
+      memoryStore.append(mem.type, mem.text);
+    }
     return text;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -58,9 +65,20 @@ async function streamMember(
   }
 }
 
-/** 组装"基础 prompt"：共享上下文 + 用户原始问题。 */
-function buildBasePrompt(sharedContext: string, prompt: string): string {
-  return sharedContext ? `${sharedContext}\n\n【现在】用户说：${prompt}` : prompt;
+/** 把召回的回忆拼成一段"相关记忆"文本。 */
+function buildMemoryContext(memories: Memory[]): string {
+  if (memories.length === 0) return '';
+  const lines = memories.map((m) => `- [${memoryTypeLabel(m.type)}] ${m.text}`);
+  return `【相关记忆】\n${lines.join('\n')}`;
+}
+
+/** 组装"基础 prompt"：相关记忆 + 共享上下文 + 用户原始问题。 */
+function buildBasePrompt(sharedContext: string, memoryContext: string, prompt: string): string {
+  const parts: string[] = [];
+  if (memoryContext) parts.push(memoryContext);
+  if (sharedContext) parts.push(sharedContext);
+  parts.push(`【现在】用户说：${prompt}`);
+  return parts.join('\n\n');
 }
 
 const MAX_A2A_DEPTH = 7;
@@ -119,8 +137,9 @@ async function runSerial(
   permissionMode: PermissionMode,
   res: ServerResponse,
   sharedContext: string,
+  memoryContext: string,
 ): Promise<void> {
-  const basePrompt = buildBasePrompt(sharedContext, prompt);
+  const basePrompt = buildBasePrompt(sharedContext, memoryContext, prompt);
   const previous: { name: string; content: string }[] = [];
   const state: ChainState = { depth: 0, streak: undefined };
 
@@ -166,13 +185,15 @@ async function handleChat(
 
   // 组装共享上下文：当前这条消息之前的历史，让被 @ 的成员了解"大家刚才聊了什么"。
   const sharedContext = buildSharedContext(history.getAll());
+  // 结构化记忆：按当前问题召回相关记忆，注入 prompt。
+  const memoryContext = buildMemoryContext(recall(prompt, memoryStore.getAll()));
 
   history.append({ role: 'user', target: label, text: display });
 
   if (mode === 'workflow') {
-    await runSerial(targets, prompt, permissionMode, res, sharedContext);
+    await runSerial(targets, prompt, permissionMode, res, sharedContext, memoryContext);
   } else {
-    const basePrompt = buildBasePrompt(sharedContext, prompt);
+    const basePrompt = buildBasePrompt(sharedContext, memoryContext, prompt);
     await Promise.all(targets.map((m) => streamMember(m, basePrompt, permissionMode, res)));
   }
 }

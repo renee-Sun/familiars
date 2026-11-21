@@ -8,13 +8,13 @@
 
 | 动物 | 名字（别名） | 背后模型 | 定位 |
 |---|---|---|---|
-| 英国长毛猫 | 福多多（福宝 / 多宝 / 多多） | DeepSeek | 温和统筹 |
-| 赤狐 | Dobby | GLM | 机敏利落、写码实现 |
-| 猫头鹰 | Hedwig | Kimi | 智慧夜行、分析审查 |
+| 英国长毛猫 | 福多多（福宝 / 多宝 / 多多） | DeepSeek V4 Pro | 架构统筹 |
+| 赤狐 | Dobby | GLM 5.3 | 写码实现、安全审计 |
+| 猫头鹰 | Hedwig | DeepSeek V4 Flash | 审查 + 快速测试 |
 
 ## 当前状态
 
-**M5 完成 ✅** —— 有了 Web 前端（实时流式群聊）。
+**M7 完成 ✅** —— 结构化记忆（agent 自动沉淀教训/决策/事实，按相关性召回）。
 
 ```bash
 corepack pnpm install
@@ -30,44 +30,63 @@ corepack pnpm check                     # 类型检查（tsc）
 corepack pnpm test                      # 单元测试
 ```
 
+Web 端额外支持 **`#workflow`**：
+
+- `#workflow 问题` → 三只按顺序接力，每只看到前面答案；
+- `#workflow @福多多 @Dobby 问题` → 按你 @ 的顺序接力；
+- 接力过程中，agent 回复里"行首 @" 别人会自动拉起（A2A）。
+
 ## 代码结构
 
 | 文件 | 职责 |
 |---|---|
 | `src/agent-member.ts` | `AgentMember` 接口 + `SendOptions`/`PermissionMode`（核心抽象） |
-| `src/claude-member.ts` | `ClaudeCodeMember` 实现——spawn + 流式 + 会话 + 超时 |
+| `src/claude-member.ts` | `ClaudeCodeMember` 实现——spawn + 流式 + 会话 + 空闲超时 + `--model` |
 | `src/stream-events.ts` | stream-json 纯解析函数（可单测，无副作用） |
 | `src/session-store.ts` | `SessionStore`——「成员 id → 会话 id」磁盘持久化 |
 | `src/history-store.ts` | `HistoryStore`——聊天记录落盘（`GET /history` 读取、`DELETE` 清空） |
-| `src/members.ts` | 三只动物的配置（settings 路径 + 动物人设） |
+| `src/shared-context.ts` | 把聊天历史压成摘要注入成员 prompt（共享时间线） |
+| `src/memory-store.ts` | `MemoryStore`——结构化记忆（教训/决策/事实）落盘 |
+| `src/memory.ts` | 记忆纯函数：`extractMemories`（提取标记）+ `recall`（关键词召回） |
+| `src/a2a-mentions.ts` | 解析 agent 回复里的"行首 @"（A2A 路由手势） |
+| `src/ping-pong.ts` | ping-pong 连击护栏（纯函数，防"踢皮球"死循环） |
+| `src/members.ts` | 三只动物的配置（模型 + settings 路径 + 动物人设） |
 | `src/index.ts` | CLI 入口：@路由 / @all 广播 / --reset |
-| `src/server.ts` | Web 服务：`GET /`、`GET /members`、`GET /history`、`POST /chat`（NDJSON 流式） |
-| `index.html` | 前端单页：@提及路由 + 消息气泡 + 流式渲染 |
-| `src/*.test.ts` | 单元测试（node:test，零额外依赖） |
+| `src/server.ts` | Web 服务 + 串行接力 `runSerial` + A2A `runA2A` |
+| `index.html` | 前端单页：@提及路由 + `#workflow` + 消息气泡 + 流式渲染 |
+| `src/*.test.ts` | 单元测试（node:test，零额外依赖，45 个） |
 
 ## 里程碑
 
 - **M0 单 agent 流式闭环** ✅：`spawn claude -p` → 解析 stream-json → 流式输出。
 - **M1 适配器抽象 + 三成员 + 人设** ✅：`AgentMember` 接口；`--append-system-prompt` 注入动物身份。
 - **M2 会话持久化** ✅：从 init 事件抓 session_id，`--resume` 自动续接，`--reset` 清空。
-- **M3 群聊语义** ✅：`@all` 广播（并发 fan-out）+ 多人 `@`（`@Dobby @Hedwig` 并发定向）+ 权限档位（广播 `plan` 只读、@一人或多人 `acceptEdits` 可写）。
-- **M4 测试 + 打磨** ✅：抽纯函数、10 个单测、总超时保护、文档。
-- **M5 Web 前端** ✅：Node 原生 http + NDJSON 流式 + 单页 HTML，零依赖、不引框架。
+- **M3 群聊语义** ✅：`@all` 广播 + 多人 `@` + 权限档位（广播只读、定向可写）。
+- **M4 测试 + 打磨** ✅：抽纯函数、单测、空闲超时保护、文档。
+- **M5 Web 前端** ✅：Node 原生 http + NDJSON 流式 + 单页 HTML，零依赖。
+- **M6 串行接力 + A2A** ✅：`#workflow` 串行接力（每只见前面答案）+ agent 回复里"行首 @" 自动拉起（A2A）+ 四道护栏。
+- **M7 结构化记忆** ✅：agent 在回复里写「记忆|类型|内容」自动入库，调 agent 前按相关性召回注入（context 有限 vs memory 持久）。
 
-## M5 设计（面试可讲）
+## M6 设计（面试可讲）
 
-- 后端用 **Node 原生 `http`**，`POST /chat` 返回 NDJSON 流（`start → text* → done`），复用 `AgentMember.send()` 的流式接口——**UI 是 agent 抽象之上的薄层**，接前端时核心三层一行没改。
-- 前端 `fetch` + `ReadableStream` 逐行解析，把事件按 `member` 归位到对应气泡；广播时三个成员**并发写同一响应流**，事件按行交错、无损。
-- **刻意不引框架**：UI 复杂度（输入 + 气泡流式吐字）配不上 React，vanilla JS + 原生 http 零构建、更清晰——按需选型本身是设计判断。
+- **串行接力**：`runSerial` 依次回答，每只的 prompt = 原始问题 + `[前面成员 answered: 内容]`——"把上一只答案传给下一只"是链的底座。
+- **A2A**：`runA2A` 递归——某只答完，解析它回复里的"行首 @"（`parseA2AMentions`，只认行首、最长匹配、过滤自己、最多 2 只），自动拉起被 @ 的成员，交接 prompt 里告诉它"谁在叫你、TA 说了什么"（`directMessageFrom` 语义）。
+- **四道护栏**：
+  1. 深度上限 `MAX_A2A_DEPTH = 7`（每只两轮 + 收尾的空间，同时挡住无限循环）；
+  2. **ping-pong 连击**（`ping-pong.ts`）：无序对 `{from,to,count}`，`≥2` 注入警告、`≥4` 硬拦截、**回复 >200 字视为"实质活动"就重置**——精准掐死"踢皮球"，不误伤"真干活的正常来回"；
+  3. 单条回复最多 @ 2 只；
+  4. 行首 @ 才路由（正文里顺带提到的 @ 不触发）。
 
 ## 亮点
 
 1. **适配器抽象**：`AgentMember` 接口让"加一个新 agent 运行时"变成"加一个实现"（接 Codex = 加 `CodexMember`）。
-2. **复用现有 settings 隔离 provider**：每厂商一份 settings，`claude -p --settings <file>` 直接复用，天然"一进程一后端"。
-3. **流式解析**：stream-json 每行一个 JSON 事件，异步逐行读取，边生成边输出。
-4. **会话持久化**：从 init 事件抓 session_id，跨轮 `--resume`，成员"有记忆"。
-5. **权限档位**：广播用 `plan`（只读）、@一人或多人用 `acceptEdits`（可写），复用 agent CLI 现成的权限模型。
-6. **零依赖 Web 层**：原生 http + 单页 HTML，不引框架。
+2. **模型单一真相来源**：`--model` 显式传，`members.ts` 的 `model` 字段决定模型，settings 只存 base_url + token——换模型改一处。
+3. **串行接力 + A2A**：从"各答各的"升级到"能接力、能互 @"，配四道护栏防失控。
+4. **复用现有 settings 隔离 provider**：每厂商一份 settings，`claude -p --settings <file>` 直接复用。
+5. **流式解析**：stream-json 每行一个 JSON 事件，异步逐行读取，边生成边输出。
+6. **会话持久化**：从 init 事件抓 session_id，跨轮 `--resume`，成员"有记忆"。
+7. **零依赖 Web 层**：原生 http + 单页 HTML，不引框架。
+8. **结构化记忆**：教训/决策/事实有类型、持久、按相关性召回（区别于"最近聊天摘要"的临时性）。
 
 ## 踩过的坑
 
@@ -79,6 +98,8 @@ corepack pnpm test                      # 单元测试
 | pnpm 11/12 build 脚本默认 deny | `pnpm-workspace.yaml` 用 `allowBuilds` 映射放行 |
 | 模型自报"我是 Claude Code" | 用 `--append-system-prompt` 覆盖身份 |
 | 权限档位是否真生效 | 实测：`plan` 只输出计划不写文件；`acceptEdits` 能写文件 |
+| 测试老打到旧 server（EADDRINUSE） | 测试前 `lsof -ti :3210 \| xargs kill` 清残留 |
+| 测试误删真实数据 | 数据目录用 `FAMILIARS_DATA_DIR` 隔离，测试指向临时目录 |
 
 ## 路线图
 
@@ -88,7 +109,9 @@ corepack pnpm test                      # 单元测试
 - ✅ M3 群聊语义：@单个 / 广播 + 权限档位
 - ✅ M4 打磨 + 测试 + 文档
 - ✅ M5 Web 前端（零依赖）
+- ✅ M6 串行接力 + A2A 协作
+- ✅ M7 结构化记忆
 
 ## 已知限制 / 后续
 
-见 [TODO.md](TODO.md) —— 身份软覆盖、cwd 敏感、共享时间线、接入 Codex、markdown 渲染等。
+见 [TODO.md](TODO.md) —— 接入 Codex、Markdown 渲染、liveness probe（区分卡死/忙）、记忆的向量化检索等。
