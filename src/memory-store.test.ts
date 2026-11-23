@@ -87,14 +87,25 @@ test('semanticSearch：余弦相似度排序 + 阈值过滤', () => {
   rmSync(dir, { recursive: true, force: true });
 });
 
-test('hybridSearch：关键词命中优先、语义相似兜底补空缺', () => {
+test('hybridSearch：按向量相关性重排（不再关键词优先）', () => {
   const { store, dir } = makeStore();
-  store.append('lesson', 'allowbuilds 放行', [0, 1, 0]);
-  store.append('fact', '服务监听 3210', [1, 0, 0]);
+  store.append('lesson', 'allowbuilds 放行', [0, 1, 0]); // 关键词命中但向量不相关
+  store.append('fact', '服务监听 3210', [1, 0, 0]);       // 向量高度相关
 
-  // 关键词命中第 1 条，语义（向量 [1,0,0]）命中第 2 条 → 合并后关键词在前
   const r = store.hybridSearch('allowbuilds', [1, 0, 0], 3, 0.4);
-  assert.deepEqual(r.map((m) => m.text), ['allowbuilds 放行', '服务监听 3210']);
+  // 向量重排后：语义相关的排前面，关键词命中但语义无关的排后面
+  assert.deepEqual(r.map((m) => m.text), ['服务监听 3210', 'allowbuilds 放行']);
+  store.close();
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('hybridSearch：空查询向量退回纯关键词', () => {
+  const { store, dir } = makeStore();
+  store.append('fact', 'allowbuilds 放行', [0, 1, 0]);
+  store.append('fact', '配色用暖橙', [1, 0, 0]);
+
+  const r = store.hybridSearch('allowbuilds', [], 3, 0.4);
+  assert.deepEqual(r.map((m) => m.text), ['allowbuilds 放行']);
   store.close();
   rmSync(dir, { recursive: true, force: true });
 });

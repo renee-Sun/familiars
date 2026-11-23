@@ -98,6 +98,11 @@
 - **坑**：FTS5 对中文——`unicode61` 把无空格中文整句当一个 token（查 2 字词全空），`trigram` 能子串匹配但对 <3 字的词无效，故 trigram + LIKE 兜底。
 - **面试点**：SQLite + 零依赖 + 诚实标注边界（Top 10）；中文全文检索的分词坑。
 
+### M10 召回质量（Clowder 对齐）✅
+- **改进**：候选按「向量距离 × 时间衰减」重排（不再关键词优先）+ MMR 多样性去重。三个组件全是纯函数：`computeRecencyFactor`（fractional decay）、`jaccardSimilarity` + `applyMMR`（Carbonell & Goldstein 1998）、`unionById`。
+- **发现（重要）**：读 Clowder 源码发现它的 `SemanticReranker` **根本不是 cross-encoder**——只是「FTS 候选按预存向量距离重排」，外加 MMR + 时间衰减两个纯函数（注释原文：*"rerank doesn't replace lexical recall, only reorders"*）。所以没上新模型、零新依赖就对齐了它。
+- **面试点**：召回质量 = 查全 vs 查准的平衡；「精排」不一定要 cross-encoder——向量重排 + 多样性 + 时间衰减就解决了大部分问题；cross-encoder 是「比 Clowder 更进一步」的选项。
+
 ---
 
 ## 三、坑汇总（速查表）
@@ -120,7 +125,7 @@
 
 ## 已知差距 / 下一步（对照 Clowder）
 
-- **记忆召回加 reranker（精排）**：粗召回后加 cross-encoder 重排 + MMR 去重 + 时间衰减（现在一次余弦排序就完了）。
+- **真正的 cross-encoder 精排（超出 Clowder）**：M10 已做 Clowder 对齐版（向量重排 + MMR + 时间衰减）；若要更准可再加 bge-reranker-v2-m3（cross-encoder）——但 Clowder 本身没有这层，属「比 Clowder 更进一步」。
 - **liveness probe**：区分「卡死 vs 忙」（现在只有一刀切超时）。
 - **记忆自动化（反思/摘要）**：不靠 agent 手写标记，平台主动把会话压成记忆。
 - **向量索引**：余弦暴搜 → sqlite-vec（记忆量级上一个台阶再做）。

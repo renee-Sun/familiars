@@ -16,7 +16,7 @@
 
 ## 当前状态
 
-**M9 完成 ✅** —— 记忆存储升级（JSON → SQLite + FTS5 全文索引 + BLOB 向量）。
+**M10 完成 ✅** —— 召回质量（Clowder 对齐：向量重排 + MMR 多样性 + 时间衰减）。
 
 ```bash
 corepack pnpm install
@@ -49,7 +49,7 @@ Web 端额外支持 **`#workflow`**：
 | `src/history-store.ts` | `HistoryStore`——聊天记录落盘（`GET /history` 读取、`DELETE` 清空） |
 | `src/shared-context.ts` | 把聊天历史压成摘要注入成员 prompt（共享时间线） |
 | `src/memory-store.ts` | `MemoryStore`——SQLite（`node:sqlite`，零依赖）+ FTS5 全文索引 + BLOB 向量；`keywordSearch`/`semanticSearch`/`hybridSearch` |
-| `src/memory.ts` | 记忆纯函数：`extractMemories`（提取）+ `extractKeywords`/`cosineSimilarity`/`mergeHybrid`（无副作用，可单测） |
+| `src/memory.ts` | 记忆纯函数：`extractMemories`/`extractKeywords`/`cosineSimilarity`/`computeRecencyFactor`/`jaccardSimilarity`/`applyMMR`（无副作用，可单测） |
 | `src/embedding.ts` | 智谱 embedding 客户端：`embedTexts`/`embedOne`（env 可覆盖，provider-agnostic） |
 | `src/a2a-mentions.ts` | 解析 agent 回复里的"行首 @"（A2A 路由手势） |
 | `src/ping-pong.ts` | ping-pong 连击护栏（纯函数，防"踢皮球"死循环） |
@@ -57,7 +57,7 @@ Web 端额外支持 **`#workflow`**：
 | `src/index.ts` | CLI 入口：@路由 / @all 广播 / --reset |
 | `src/server.ts` | Web 服务 + 串行接力 `runSerial` + A2A `runA2A` |
 | `index.html` | 前端单页：@提及路由 + `#workflow` + 消息气泡 + 流式渲染 |
-| `src/*.test.ts` | 单元测试（node:test，零额外依赖，60 个） |
+| `src/*.test.ts` | 单元测试（node:test，零额外依赖，65 个） |
 
 ## 里程碑
 
@@ -71,6 +71,7 @@ Web 端额外支持 **`#workflow`**：
 - **M7 结构化记忆** ✅：agent 在回复里写「记忆|类型|内容」自动入库，调 agent 前按相关性召回注入（context 有限 vs memory 持久）。
 - **M8 向量化检索** ✅：智谱 embedding（默认 `embedding-2`）给记忆打向量，召回 = 关键词命中优先 + 余弦相似度语义兜底（混合召回），旧记忆启动时自动回填向量。
 - **M9 记忆存储升级** ✅：`memory.json` 整文件读写 → SQLite（`node:sqlite`，仍零依赖）；关键词走 FTS5 trigram 索引 + LIKE 兜底短中文词，向量存 BLOB 做余弦召回。
+- **M10 召回质量** ✅：对齐 Clowder 的召回方案——候选按「向量距离 × 时间衰减」重排（不再关键词优先）+ MMR 多样性去重（Carbonell 算法，纯函数）。
 
 ## M6 设计（面试可讲）
 
@@ -94,6 +95,7 @@ Web 端额外支持 **`#workflow`**：
 8. **结构化记忆**：教训/决策/事实有类型、持久、按相关性召回（区别于"最近聊天摘要"的临时性）。
 9. **向量化检索**：embedding 客户端 provider-agnostic（env 换厂商）；混合召回 = 关键词精确 + 向量语义，互相兜底。
 10. **SQLite 存储 + 零依赖**：用 Node 内置 `node:sqlite`（不引第三方原生依赖）；append 不再整文件重写，关键词走 FTS5 索引，规模上来也不怕。
+11. **召回质量（Clowder 对齐）**：候选按「向量距离 × 时间衰减」重排 + MMR 多样性去重——读完 Clowder 源码后发现它并没有 cross-encoder，而是这三个纯函数，于是照着实现，零新依赖。
 
 ## 踩过的坑
 
@@ -123,6 +125,7 @@ Web 端额外支持 **`#workflow`**：
 - ✅ M7 结构化记忆
 - ✅ M8 向量化检索
 - ✅ M9 记忆存储升级（SQLite + FTS5）
+- ✅ M10 召回质量（向量重排 + MMR + 时间衰减）
 
 ## 已知限制 / 后续
 

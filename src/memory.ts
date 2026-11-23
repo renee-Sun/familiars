@@ -53,29 +53,83 @@ export function cosineSimilarity(a: readonly number[], b: readonly number[]): nu
   return dot / (Math.sqrt(normA) * Math.sqrt(normB));
 }
 
-/**
- * 混合召回的合并：关键词命中优先（精确），语义命中补空缺（兜底），按 id 去重、截断到 limit。
- */
-export function mergeHybrid(
-  keywordHits: readonly Memory[],
-  semanticHits: readonly Memory[],
-  limit = 3,
-): Memory[] {
-  const out: Memory[] = [];
+/** 按 id 去重合并多组记忆（保序，先出现者优先）。 */
+export function unionById(...arrays: readonly Memory[][]): Memory[] {
   const seen = new Set<string>();
-  for (const memory of keywordHits) {
-    if (!seen.has(memory.id)) {
-      out.push(memory);
-      seen.add(memory.id);
+  const out: Memory[] = [];
+  for (const arr of arrays) {
+    for (const memory of arr) {
+      if (!seen.has(memory.id)) {
+        seen.add(memory.id);
+        out.push(memory);
+      }
     }
   }
-  for (const memory of semanticHits) {
-    if (!seen.has(memory.id)) {
-      out.push(memory);
-      seen.add(memory.id);
+  return out;
+}
+
+/** 时间衰减因子（Clowder 的 fractional decay：factor = 半衰期 / (半衰期 + 年龄天数)）。 */
+export function computeRecencyFactor(createdAt: number, now: number, halfLifeDays = 45): number {
+  if (halfLifeDays <= 0) return 1;
+  const ageDays = Math.max(0, (now - createdAt) / 86_400_000);
+  return halfLifeDays / (halfLifeDays + ageDays);
+}
+
+/** Jaccard 相似度（MMR 的"相似"度量：比两个关键词集合的重合度）。 */
+export function jaccardSimilarity(a: readonly string[], b: readonly string[]): number {
+  const setA = new Set(a);
+  const setB = new Set(b);
+  if (setA.size === 0 && setB.size === 0) return 0;
+  let intersection = 0;
+  for (const k of setA) if (setB.has(k)) intersection += 1;
+  const union = setA.size + setB.size - intersection;
+  return union === 0 ? 0 : intersection / union;
+}
+
+export interface ScoredMemory {
+  memory: Memory;
+  score: number;
+}
+
+/**
+ * MMR 多样性重排（Carbonell & Goldstein 1998，Clowder 同款）：
+ * 在相关性（score）和多样性（与已选记忆的 Jaccard 相似度）之间取平衡，避免召回一堆内容重复的记忆。
+ * 候选不足 3×limit 时直接取分数最高的前 limit 条（小规模没必要做 MMR）。
+ */
+export function applyMMR(items: readonly ScoredMemory[], limit: number, lambda = 0.7): Memory[] {
+  if (items.length === 0) return [];
+  if (items.length < 3 * limit) return items.slice(0, limit).map((i) => i.memory);
+
+  const keywordCache = new Map<string, string[]>();
+  const keywordsOf = (memory: Memory): string[] => {
+    let k = keywordCache.get(memory.id);
+    if (!k) {
+      k = extractKeywords(memory.text);
+      keywordCache.set(memory.id, k);
     }
+    return k;
+  };
+
+  const selected: ScoredMemory[] = [];
+  const remaining = [...items];
+  while (selected.length < limit && remaining.length > 0) {
+    let bestIdx = 0;
+    let bestScore = -Infinity;
+    for (let i = 0; i < remaining.length; i++) {
+      const item = remaining[i]!;
+      const relevance = item.score;
+      const maxSim = selected.length === 0
+        ? 0
+        : Math.max(...selected.map((s) => jaccardSimilarity(keywordsOf(item.memory), keywordsOf(s.memory))));
+      const mmrScore = lambda * relevance - (1 - lambda) * maxSim;
+      if (mmrScore > bestScore) {
+        bestScore = mmrScore;
+        bestIdx = i;
+      }
+    }
+    selected.push(remaining.splice(bestIdx, 1)[0]!);
   }
-  return out.slice(0, limit);
+  return selected.map((s) => s.memory);
 }
 
 const TYPE_LABELS: Record<MemoryType, string> = {

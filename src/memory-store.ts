@@ -1,7 +1,14 @@
 import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
-import { cosineSimilarity, extractKeywords, mergeHybrid } from './memory.js';
+import {
+  applyMMR,
+  computeRecencyFactor,
+  cosineSimilarity,
+  extractKeywords,
+  unionById,
+  type ScoredMemory,
+} from './memory.js';
 
 export type MemoryType = 'lesson' | 'decision' | 'fact';
 
@@ -157,9 +164,33 @@ export class MemoryStore {
       .map((x) => x.memory);
   }
 
-  /** 混合召回：关键词命中优先 + 语义相似兜底（mergeHybrid 合并去重）。 */
+  /**
+   * 召回（Clowder 对齐版）：
+   * 1. 候选集 = 关键词 ∪ 语义（保留 M8 的混合，字面不重合也能召回）；
+   * 2. 按「向量距离 × 时间衰减」打分排序（向量重排，不再关键词优先）；
+   * 3. MMR 多样性去重取 top-N。
+   * queryVector 为空（embedding 不可用）时退回纯关键词召回。
+   */
   hybridSearch(query: string, queryVector: readonly number[], limit = 3, threshold = 0.4): Memory[] {
-    return mergeHybrid(this.keywordSearch(query, limit), this.semanticSearch(queryVector, limit, threshold), limit);
+    if (queryVector.length === 0) return this.keywordSearch(query, limit);
+
+    const candidateLimit = Math.max(limit * 3, 9);
+    const candidates = unionById(
+      this.keywordSearch(query, candidateLimit),
+      this.semanticSearch(queryVector, candidateLimit, threshold),
+    );
+
+    const now = Date.now();
+    const scored: ScoredMemory[] = candidates
+      .map((memory) => {
+        const vectorScore = memory.vector && memory.vector.length === queryVector.length
+          ? cosineSimilarity(queryVector, memory.vector)
+          : 0;
+        return { memory, score: vectorScore * computeRecencyFactor(memory.createdAt, now) };
+      })
+      .sort((a, b) => b.score - a.score);
+
+    return applyMMR(scored, limit);
   }
 
   /** 按 id 批量加载完整记忆，保持传入顺序。 */

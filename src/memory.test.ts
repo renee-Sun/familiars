@@ -1,6 +1,15 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { extractMemories, extractKeywords, cosineSimilarity, memoryTypeLabel, mergeHybrid } from './memory.js';
+import {
+  extractMemories,
+  extractKeywords,
+  cosineSimilarity,
+  memoryTypeLabel,
+  unionById,
+  computeRecencyFactor,
+  jaccardSimilarity,
+  applyMMR,
+} from './memory.js';
 import type { Memory } from './memory-store.js';
 
 test('extractMemories 提取"记忆|类型|内容"标记行', () => {
@@ -42,14 +51,49 @@ test('cosineSimilarity：缩放无关（模长归一）', () => {
   assert.ok(Math.abs(cosineSimilarity([1, 1], [2, 2]) - 1) < 1e-9);
 });
 
-test('mergeHybrid：关键词命中优先、语义补空缺、去重', () => {
-  const a: Memory = { id: '1', type: 'fact', text: 'deploy_port 是 3210', createdAt: 1 };
-  const b: Memory = { id: '2', type: 'fact', text: '服务监听 3210', createdAt: 2 };
-  const c: Memory = { id: '3', type: 'fact', text: '配色用暖橙', createdAt: 3 };
-  // 关键词 [a]，语义 [a(重复), b] → 结果 a, b（a 不重复）
-  assert.deepEqual(mergeHybrid([a], [a, b], 3).map((m) => m.id), ['1', '2']);
-  // limit 截断
-  assert.deepEqual(mergeHybrid([a], [b, c], 2).map((m) => m.id), ['1', '2']);
+test('unionById：按 id 去重合并、保序', () => {
+  const a: Memory = { id: '1', type: 'fact', text: 'a', createdAt: 1 };
+  const b: Memory = { id: '2', type: 'fact', text: 'b', createdAt: 2 };
+  assert.deepEqual(unionById([a], [a, b]).map((m) => m.id), ['1', '2']);
+});
+
+test('computeRecencyFactor：新鲜=1、半衰期处=0.5、随时间衰减', () => {
+  const now = 1_000_000_000_000;
+  assert.equal(computeRecencyFactor(now, now, 45), 1);
+  assert.equal(computeRecencyFactor(now - 45 * 86_400_000, now, 45), 0.5);
+  assert.equal(computeRecencyFactor(now - 90 * 86_400_000, now, 45), 45 / 135);
+});
+
+test('jaccardSimilarity：集合重合度', () => {
+  assert.equal(jaccardSimilarity(['a', 'b'], ['b', 'c']), 1 / 3);
+  assert.equal(jaccardSimilarity(['a', 'b'], ['a', 'b']), 1);
+  assert.equal(jaccardSimilarity(['a'], ['b']), 0);
+});
+
+test('applyMMR：候选不足 3×limit 直接取分数最高', () => {
+  const a = { memory: { id: '1', type: 'fact' as const, text: 'a', createdAt: 1 }, score: 0.9 };
+  const b = { memory: { id: '2', type: 'fact' as const, text: 'b', createdAt: 2 }, score: 0.5 };
+  assert.deepEqual(applyMMR([a, b], 1).map((m) => m.id), ['1']);
+});
+
+test('applyMMR：候选充足时做多样性重排，避免选一堆重复内容', () => {
+  const mk = (id: string, text: string, score: number) => ({
+    memory: { id, type: 'fact' as const, text, createdAt: 1 },
+    score,
+  });
+  const items = [
+    mk('1', 'pnpm build 脚本报错', 0.9),
+    mk('2', 'pnpm build 脚本报错', 0.88),
+    mk('3', 'pnpm build 脚本报错', 0.86),
+    mk('4', '端口是 3210', 0.7),
+    mk('5', '配色用暖橙', 0.6),
+    mk('6', '记忆系统用 sqlite', 0.5),
+    mk('7', '会话用 resume', 0.4),
+    mk('8', '广播只读', 0.3),
+    mk('9', '模型单一来源', 0.2),
+  ];
+  // 前 3 条高分但内容几乎一样，MMR 应跳过高重复的 2/3，选出内容分散的 4 和 5
+  assert.deepEqual(applyMMR(items, 3).map((m) => m.id), ['1', '4', '5']);
 });
 
 test('memoryTypeLabel', () => {
